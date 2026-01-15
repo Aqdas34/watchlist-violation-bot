@@ -1,0 +1,31 @@
+# Virtual environment
+venv/
+.venv/
+
+# Logs
+logs/
+log/
+*.log
+*.json
+*.csv
+*.png
+*.txt
+*.md
+pics/
+
+
+
+app.py
+main.py
+test.py
+passhub.py
+main_code/
+single_one.py
+files/
+# Python cache
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db
