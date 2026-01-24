@@ -12,6 +12,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import json
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Configuration file path
 SHARING_CONFIG_FILE = "sharing_config.json"
@@ -107,7 +108,13 @@ def load_config():
                     "sharing_threshold": 3,
                     "inactivity_threshold": 1,
                     "inactivity_days": 60,
+                    "sharing_days": 30,
                     "cycle_interval_minutes": 20
+                },
+                "exclusions": {
+                    "accounts": ["ark.boss2@arkodeitv.com"],
+                    "ips": ["98.251.68.45"],
+                    "dids": ["124187073355", "020000000000"]
                 },
                 "headers": {
                     "Content-Type": "application/json"
@@ -141,7 +148,13 @@ def load_config():
                 "sharing_threshold": 3,
                 "inactivity_threshold": 1,
                 "inactivity_days": 60,
+                "sharing_days": 30,
                 "cycle_interval_minutes": 20
+            },
+            "exclusions": {
+                "accounts": ["ark.boss2@arkodeitv.com"],
+                "ips": ["98.251.68.45"],
+                "dids": ["124187073355", "020000000000"]
             },
             "headers": {
                 "Content-Type": "application/json"
@@ -252,21 +265,21 @@ def to_datetime(ms):
 def generate_password(email):
     """
     Generate password from email format.
-    Email format: ark.username@arkodeitv.com
+    Email format: ark.username@domain.com
     Password format: arkusernamepass (remove dot, remove @domain, add 'pass')
     """
     # Remove the @domain part
     local_part = email.split('@')[0]
     # Remove dots and add 'pass' at the end
-    password = local_part.replace('.', '') + 'pass'
+    password = (local_part.replace('.', '') + 'pass').lower()
     return password
 
 
 def extract_username(email):
     """
     Extract username from email for grouping.
-    ark.username@arkodeitv.com -> username
-    ark.username2@arkodeitv.com -> username
+    ark.username@domain.com -> username
+    ark.username2@domain.com -> username
     """
     local_part = email.split('@')[0]
     # Remove 'ark.' prefix if present
@@ -404,6 +417,19 @@ def call_with_token(token):
             timeout=timeout
         )
         logger.info(f" Response status: {resp.status_code}")
+
+        # If Cloudflare rate limits (HTTP 429), wait 5 minutes and retry once
+        if resp.status_code == 429:
+            logger.warning(" Received 429 (rate limited). Waiting 5 minutes before retrying...")
+            time.sleep(300)  # 5 minutes
+            resp = session.post(
+                api_url,
+                headers=headers,
+                json={},
+                timeout=timeout
+            )
+            logger.info(f" Retry response status: {resp.status_code}")
+
         resp.raise_for_status()
         result = resp.json()
         logger.info(f" API call successful: {result.get('successful', 'N/A')}")
@@ -432,9 +458,7 @@ def call_vps(email):
     headers = headers_config.copy()  # Use headers from config
     
     try:
-        password = generate_password(email)
-
-            # Set password based on email prefix
+        # Generate password for emails starting with "ark"
         if email.startswith("ark"):
             password = generate_password(email)
         else:
@@ -506,18 +530,64 @@ def check_inactivity_violation(account_devices):
 def check_group_sharing_violation(group_accounts_data):
     """
     Check for sharing violation across all accounts in a username group
+    Sharing Rule 1: Different IPs on any account in a group within the last 30 days
+    (every account in the group should have the same IP)
     Returns: (is_violation, details)
     """
+
+    config = get_config()
+    # Get exclusions from config, defaulting to empty lists if not found
+    exclusions = config.get("exclusions", {})
+    excluded_accounts = set(exclusions.get("accounts", []))
+    excluded_ips = set(exclusions.get("ips", []))
+    excluded_dids = set(exclusions.get("dids", []))
+    
+    # Get sharing days threshold (default 30 days)
+    sharing_days = config.get("violations", {}).get("sharing_days", 30)
+    now = datetime.now()
+    threshold_date = now - timedelta(days=sharing_days)
+
+    logger.debug(f"Excluded Accounts: {excluded_accounts}")
+    logger.debug(f"Excluded IPs: {excluded_ips}")
+    logger.debug(f"Excluded DIDs: {excluded_dids}")
+    logger.debug(f"Sharing rule time window: last {sharing_days} days (since {threshold_date.strftime('%Y-%m-%d %H:%M:%S')})")
+
     all_devices = []
     account_ips = defaultdict(set)
     
     for email, devices in group_accounts_data.items():
+        # Skip excluded accounts
+        if email in excluded_accounts:
+            logger.debug(f" [Exclusion] Skipping account {email}: account is whitelisted.")
+            continue
+            
         for device in devices:
+            ip = device.get("lastLoginClientIp")
+            did = device.get("did")
+            last_login_ms = device.get("lastLoginDate")
+
+            # Check if device was used within the last 30 days
+            if last_login_ms:
+                last_login = datetime.fromtimestamp(last_login_ms / 1000)
+                if last_login < threshold_date:
+                    logger.debug(f" [Time Filter] Skipping device for {email}: last login {last_login.strftime('%Y-%m-%d %H:%M:%S')} is more than {sharing_days} days ago.")
+                    continue
+            else:
+                # Never logged in - skip for sharing rule (only check devices with login history)
+                logger.debug(f" [Time Filter] Skipping device for {email}: never logged in.")
+                continue
+
+            if ip and ip in excluded_ips:
+                logger.debug(f" [Exclusion] Skipping device for {email}: IP {ip} is whitelisted.")
+                continue
+            if did and did in excluded_dids:
+                logger.debug(f" [Exclusion] Skipping device for {email}: DID {did} is whitelisted.")
+                continue
+
             all_devices.append({
                 **device,
                 "email": email
             })
-            ip = device.get("lastLoginClientIp")
             if ip:
                 account_ips[email].add(ip)
     
@@ -534,7 +604,74 @@ def check_group_sharing_violation(group_accounts_data):
             "total_devices": len(all_devices),
             "unique_ips": list(all_ips),
             "account_ips": {email: list(ips) for email, ips in account_ips.items()},
-            "devices": all_devices
+            "devices": all_devices,
+            "rule": "Sharing Rule 1: Different IPs in group within last 30 days"
+        }
+        return True, details
+    
+    return False, None
+
+
+def check_account_sharing_violation(email, devices):
+    """
+    Check for sharing violation on a single account
+    Sharing Rule 2: Multiple devices under the same account
+    (each account should only have 1 device logged in within the last 30 days)
+    Returns: (is_violation, details)
+    """
+    config = get_config()
+    # Get exclusions from config
+    exclusions = config.get("exclusions", {})
+    excluded_accounts = set(exclusions.get("accounts", []))
+    excluded_ips = set(exclusions.get("ips", []))
+    excluded_dids = set(exclusions.get("dids", []))
+    
+    # Skip excluded accounts
+    if email in excluded_accounts:
+        logger.debug(f" [Exclusion] Skipping account {email}: account is whitelisted.")
+        return False, None
+    
+    # Get sharing days threshold (default 30 days)
+    sharing_days = config.get("violations", {}).get("sharing_days", 30)
+    now = datetime.now()
+    threshold_date = now - timedelta(days=sharing_days)
+
+    logger.debug(f"Checking account-level sharing for {email} (last {sharing_days} days)")
+    
+    # Filter devices by time window and exclusions
+    recent_devices = []
+    for device in devices:
+        ip = device.get("lastLoginClientIp")
+        did = device.get("did")
+        last_login_ms = device.get("lastLoginDate")
+
+        # Check if device was used within the last 30 days
+        if last_login_ms:
+            last_login = datetime.fromtimestamp(last_login_ms / 1000)
+            if last_login < threshold_date:
+                logger.debug(f" [Time Filter] Skipping device: last login {last_login.strftime('%Y-%m-%d %H:%M:%S')} is more than {sharing_days} days ago.")
+                continue
+        else:
+            # Never logged in - skip for sharing rule
+            logger.debug(f" [Time Filter] Skipping device: never logged in.")
+            continue
+
+        if ip and ip in excluded_ips:
+            logger.debug(f" [Exclusion] Skipping device: IP {ip} is whitelisted.")
+            continue
+        if did and did in excluded_dids:
+            logger.debug(f" [Exclusion] Skipping device: DID {did} is whitelisted.")
+            continue
+
+        recent_devices.append(device)
+    
+    # Check if there are multiple devices on this account within the last 30 days
+    if len(recent_devices) > 1:
+        details = {
+            "account": email,
+            "device_count": len(recent_devices),
+            "devices": recent_devices,
+            "rule": "Sharing Rule 2: Multiple devices on same account within last 30 days"
         }
         return True, details
     
@@ -543,13 +680,12 @@ def check_group_sharing_violation(group_accounts_data):
 
 # ------------------ Main Logic ------------------
 
-def get_account_data(email, stored_tokens, email_mapping=None):
+def get_account_data(email, stored_tokens):
     """
     Get account data (devices) for a single email
     Args:
-        email: Email in ark format (e.g., ark.username@arkodeitv.com)
+        email: Email in ark format (e.g., ark.username@domain.com)
         stored_tokens: Dictionary of stored tokens
-        email_mapping: Dict mapping ark_email -> original_email (for VPS calls)
     """
     logger.info(f"\n{'='*60}")
     logger.info(f"Processing: {email}")
@@ -584,17 +720,14 @@ def get_account_data(email, stored_tokens, email_mapping=None):
     if not data or not data.get("userInfo"):
         logger.info("→ Fetching token via VPS (token missing or API call failed)")
         try:
-            # Use original email for VPS call if mapping exists, otherwise use ark email
-            vps_email = email_mapping.get(email, email) if email_mapping else email
-            logger.debug(f"   Using email for VPS call: {vps_email} (ark format: {email})")
-            
-            vps_resp = call_vps(vps_email)
+            logger.debug(f"   Using email for VPS call: {email}")
+            vps_resp = call_vps(email)
             # Extract token from VPS response: vps_resp["data"]["token"]
             if vps_resp.get("successful") and vps_resp.get("data", {}).get("token"):
                 token = vps_resp["data"]["token"]
                 # Save token with ark email format (not original email)
                 save_token(email, token)  # Save with ark email format
-                logger.info(f"✓ Token extracted and saved for {email} (VPS called with {vps_email})")
+                logger.info(f"✓ Token extracted and saved for {email}")
                 
                 # Now call queryInfo API with the token (like app.py:526-559)
                 headers = {
@@ -684,52 +817,71 @@ def get_account_data(email, stored_tokens, email_mapping=None):
     return device_list
 
 
-def process_emails(email_list, email_mapping=None):
+def process_emails(email_list):
     """
     Process emails for violation checking
     Args:
-        email_list: List of emails to process (ark format)
-        email_mapping: Dict mapping ark_email -> original_email (for VPS calls)
+        email_list: List of emails to process (ark format, e.g., ark.username@domain.com)
     """
     stored_tokens, violation_counts = load_tokens()
     logger.info(f"Loaded tokens for {len(stored_tokens)} email(s): {list(stored_tokens.keys())}")
     
-    # Step 1: Collect all account data
-    all_accounts_data = {}  # email -> list of devices
-    for email in email_list:
-        # Pass email_mapping to get_account_data so it knows which original email to use for VPS
-        devices = get_account_data(email, stored_tokens, email_mapping=email_mapping)
-        if devices is not None:
-            all_accounts_data[email] = devices
+    # Step 1: Sort and group emails by username (before fetching account data)
+    logger.info(f"\n{'='*60}")
+    logger.info(" Step 1: Sorting and grouping emails by username...")
     
-    if not all_accounts_data:
-        logger.error(" No account data collected. Exiting.")
-        return
+    # Sort emails first
+    sorted_emails = sorted(email_list)
+    logger.info(f" Sorted {len(sorted_emails)} email(s)")
     
-    # Step 2: Group accounts by username
-    username_groups = defaultdict(dict)  # username -> {email: devices}
-    for email, devices in all_accounts_data.items():
+    # Group emails by username (without fetching account data yet)
+    username_groups = defaultdict(list)  # username -> [list of emails]
+    for email in sorted_emails:
         username = extract_username(email)
-        username_groups[username][email] = devices
+        username_groups[username].append(email)
         logger.info(f" Grouped {email} under username: {username}")
     
-    # Step 3: Load violation history
+    logger.info(f"✓ Grouped into {len(username_groups)} username group(s)")
+    
+    # Step 2: Load violation history once (will be updated after each group)
     violations_history = load_violations()
     
-    # Step 4: Check violations for each account and group
+    # Step 3: Process each group completely (fetch data, check violations, send emails, save) before moving to next
     logger.info(f"\n{'='*60}")
-    logger.info(" Checking for violations...")
+    logger.info(" Step 2: Processing groups (fetching data, checking violations, sending emails)...")
     
-    for username, group_accounts in username_groups.items():
+    group_number = 0
+    for username, group_emails in username_groups.items():
+        group_number += 1
         logger.info(f"\n{'='*60}")
-        logger.info(f"Checking username group: {username}")
-        logger.info(f"Accounts in group: {list(group_accounts.keys())}")
+        logger.info(f" Processing Group {group_number}/{len(username_groups)}: {username}")
+        logger.info(f" Emails in group: {group_emails}")
+        logger.info(f"{'='*60}")
+        
+        # Step 3a: Fetch account data for all emails in this group
+        logger.info(f" Fetching account data for {len(group_emails)} email(s) in group '{username}'...")
+        group_accounts_data = {}  # email -> list of devices
+        for email in group_emails:
+            devices = get_account_data(email, stored_tokens)
+            if devices is not None:
+                group_accounts_data[email] = devices
+            else:
+                logger.warning(f" Failed to fetch account data for {email}")
+        
+        if not group_accounts_data:
+            logger.warning(f" No account data collected for group '{username}'. Skipping to next group.")
+            continue
+        
+        logger.info(f"✓ Fetched account data for {len(group_accounts_data)} email(s) in group '{username}'")
+        
+        # Step 3b: Check violations for this group
+        logger.info(f" Checking violations for group '{username}'...")
         
         # Check group-level sharing violation (sharing rule applies across all accounts in the group)
-        is_group_sharing, group_sharing_details = check_group_sharing_violation(group_accounts)
+        is_group_sharing, group_sharing_details = check_group_sharing_violation(group_accounts_data)
         
         # Check each account for violations
-        for email, devices in group_accounts.items():
+        for email, devices in group_accounts_data.items():
             # Initialize violation tracking for this email
             if email not in violations_history:
                 # Initialize with count from CSV if available
@@ -756,30 +908,65 @@ def process_emails(email_list, email_mapping=None):
             
             config = get_config()
             
-            # Handle sharing violation (group-level only - rule applies across all accounts)
-            if is_group_sharing:
+            # Check both sharing rules
+            # Rule 1: Group-level sharing (different IPs in group within last 30 days)
+            # Rule 2: Account-level sharing (multiple devices on same account within last 30 days)
+            is_account_sharing, account_sharing_details = check_account_sharing_violation(email, devices)
+            
+            # Determine if there's any sharing violation (either rule)
+            is_sharing_violation = is_group_sharing or is_account_sharing
+            
+            if is_sharing_violation:
                 sharing_data = violations_history[email]["sharing"]
                 
                 # Get current count from CSV (source of truth)
                 current_count = violation_counts.get(email, sharing_data.get("count", 0))
                 new_count = current_count + 1
                 
+                # Determine which rule was violated and combine details
+                violation_details = None
+                violation_rule = None
+                
+                if is_group_sharing and is_account_sharing:
+                    # Both rules violated
+                    violation_rule = "Both Sharing Rule 1 and Rule 2"
+                    violation_details = {
+                        "rule": violation_rule,
+                        "group_violation": group_sharing_details,
+                        "account_violation": account_sharing_details,
+                        "unique_ips": group_sharing_details.get('unique_ips', []),
+                        "device_count": account_sharing_details.get('device_count', 0)
+                    }
+                    logger.warning(f" SHARING VIOLATION (BOTH RULES) detected for {email} (Count: {new_count})")
+                    logger.warning(f"   Rule 1: {len(group_sharing_details.get('unique_ips', []))} unique IPs across group")
+                    logger.warning(f"   Rule 2: {account_sharing_details.get('device_count', 0)} devices on account")
+                elif is_group_sharing:
+                    # Only Rule 1 violated
+                    violation_rule = group_sharing_details.get('rule', 'Sharing Rule 1')
+                    violation_details = group_sharing_details
+                    logger.warning(f" SHARING VIOLATION (Rule 1) detected for {email} (Count: {new_count})")
+                    logger.warning(f"   Group violation: {len(group_sharing_details.get('unique_ips', []))} unique IPs across group")
+                elif is_account_sharing:
+                    # Only Rule 2 violated
+                    violation_rule = account_sharing_details.get('rule', 'Sharing Rule 2')
+                    violation_details = account_sharing_details
+                    logger.warning(f" SHARING VIOLATION (Rule 2) detected for {email} (Count: {new_count})")
+                    logger.warning(f"   Account violation: {account_sharing_details.get('device_count', 0)} devices on account")
+                
                 # Update violation data
                 sharing_data["count"] = new_count
                 sharing_data["last_violation_time"] = datetime.now().isoformat()
-                sharing_data["details"] = group_sharing_details
+                sharing_data["details"] = violation_details
                 
                 # Update violation count in CSV (source of truth)
                 save_violation_count(email, new_count)
-                
-                logger.warning(f" SHARING VIOLATION detected for {email} (Count: {new_count})")
-                logger.warning(f"   Group violation: {len(group_sharing_details.get('unique_ips', []))} unique IPs across group")
                 
                 # Check if threshold reached and send email
                 sharing_threshold = config.get("violations", {}).get("sharing_threshold", 3)
                 if new_count >= sharing_threshold:
                     logger.error(f" TRIGGER: {email} has {new_count} sharing violations! (threshold: {sharing_threshold})")
-                    send_violation_email(email, "sharing", group_sharing_details, new_count)
+                    send_violation_email(email, "sharing", violation_details, new_count)
+                    send_violation_email("manoaqdas50@gmail.com", "sharing", violation_details, new_count)
             else:
                 # No violation - reset count
                 old_count = violation_counts.get(email, violations_history[email]["sharing"].get("count", 0))
@@ -813,6 +1000,7 @@ def process_emails(email_list, email_mapping=None):
                     inactivity_threshold = config.get("violations", {}).get("inactivity_threshold", 1)
                     logger.error(f" TRIGGER: {email} has inactivity violation! (threshold: {inactivity_threshold})")
                     send_violation_email(email, "inactivity", inactivity_details, 1)
+                    send_violation_email("manoaqdas50@gmail.com", "inactivity", inactivity_details, 1)
                 else:
                     logger.info(f" Inactivity violation still exists for {email}, but email already sent")
             else:
@@ -825,10 +1013,15 @@ def process_emails(email_list, email_mapping=None):
                     "details": None,
                     "email_sent": False
                 }
+        
+        # Step 3c: Save violation history after processing each group
+        save_violations(violations_history)
+        logger.info(f"\n✓ Group '{username}' processed completely. Violations saved. Emails sent if needed.")
+        logger.info(f"  Moving to next group...\n")
     
-    # Step 5: Save violation history
-    save_violations(violations_history)
-    logger.info(f"\n Violation check complete. History saved.")
+    logger.info(f"\n{'='*60}")
+    logger.info(f"✓ All {len(username_groups)} group(s) processed. Violation check complete.")
+    logger.info(f"{'='*60}")
 
 
 def format_details_for_admin(details, violation_type):
@@ -839,13 +1032,37 @@ def format_details_for_admin(details, violation_type):
     formatted = details.copy()
     
     if violation_type == "sharing":
-        # Format devices with readable dates
-        if "devices" in formatted:
+        # Handle both rules or single rule
+        if "group_violation" in formatted and "account_violation" in formatted:
+            # Both rules violated - format both
+            if "devices" in formatted["group_violation"]:
+                formatted_devices = []
+                for device in formatted["group_violation"]["devices"]:
+                    formatted_device = device.copy()
+                    if "lastLoginDate" in formatted_device and formatted_device["lastLoginDate"]:
+                        formatted_device["lastLoginDate"] = to_datetime(formatted_device["lastLoginDate"]) if isinstance(formatted_device["lastLoginDate"], (int, float)) else formatted_device["lastLoginDate"]
+                    else:
+                        formatted_device["lastLoginDate"] = "Never"
+                    formatted_devices.append(formatted_device)
+                formatted["group_violation"]["devices"] = formatted_devices
+            
+            if "devices" in formatted["account_violation"]:
+                formatted_devices = []
+                for device in formatted["account_violation"]["devices"]:
+                    formatted_device = device.copy()
+                    if "lastLoginDate" in formatted_device and formatted_device["lastLoginDate"]:
+                        formatted_device["lastLoginDate"] = to_datetime(formatted_device["lastLoginDate"]) if isinstance(formatted_device["lastLoginDate"], (int, float)) else formatted_device["lastLoginDate"]
+                    else:
+                        formatted_device["lastLoginDate"] = "Never"
+                    formatted_devices.append(formatted_device)
+                formatted["account_violation"]["devices"] = formatted_devices
+        elif "devices" in formatted:
+            # Single rule - format devices
             formatted_devices = []
             for device in formatted["devices"]:
                 formatted_device = device.copy()
                 if "lastLoginDate" in formatted_device and formatted_device["lastLoginDate"]:
-                    formatted_device["lastLoginDate"] = to_datetime(formatted_device["lastLoginDate"])
+                    formatted_device["lastLoginDate"] = to_datetime(formatted_device["lastLoginDate"]) if isinstance(formatted_device["lastLoginDate"], (int, float)) else formatted_device["lastLoginDate"]
                 else:
                     formatted_device["lastLoginDate"] = "Never"
                 formatted_devices.append(formatted_device)
@@ -874,6 +1091,12 @@ def send_violation_email(email, violation_type, details, count):
     """Send violation notification email"""
     if violation_type == "sharing":
         subject = f"Account Sharing Violation Alert - {email}"
+        
+        # Determine which rule(s) were violated
+        rule = details.get('rule', 'Sharing Violation')
+        has_group_violation = 'group_violation' in details
+        has_account_violation = 'account_violation' in details
+        
         body = f"""
         <html>
         <body>
@@ -881,10 +1104,80 @@ def send_violation_email(email, violation_type, details, count):
         <p>Dear User,</p>
         <p>We have detected a sharing violation on your account: <strong>{email}</strong></p>
         <p><strong>Violation Count:</strong> {count} consecutive violation(s)</p>
+        <p><strong>Violation Rule:</strong> {rule}</p>
+        """
         
+        # Handle both rules or single rule
+        if has_group_violation and has_account_violation:
+            # Both rules violated
+            group_details = details.get('group_violation', {})
+            account_details = details.get('account_violation', {})
+            
+            body += f"""
         <h3>Violation Details:</h3>
         <ul>
-            <li><strong>Total Devices:</strong> {details.get('total_devices', details.get('device_count', 'N/A'))}</li>
+            <li><strong>Rule 1 - Group Sharing:</strong> Different IPs across accounts in group</li>
+            <li><strong>Unique IP Addresses:</strong> {', '.join(group_details.get('unique_ips', []))}</li>
+            <li><strong>Rule 2 - Account Sharing:</strong> Multiple devices on same account</li>
+            <li><strong>Device Count:</strong> {account_details.get('device_count', 'N/A')}</li>
+        </ul>
+        
+        <h3>Group Devices (Rule 1):</h3>
+        <table border="1" cellpadding="5">
+        <tr>
+            <th>Email</th>
+            <th>Device ID</th>
+            <th>IP Address</th>
+            <th>Last Login</th>
+        </tr>
+        """
+            for device in group_details.get('devices', []):
+                last_login = device.get('lastLoginDate')
+                if last_login:
+                    last_login_str = to_datetime(last_login) if isinstance(last_login, (int, float)) else last_login
+                else:
+                    last_login_str = "Never"
+                body += f"""
+        <tr>
+            <td>{device.get('email', 'N/A')}</td>
+            <td>{device.get('did', 'N/A')}</td>
+            <td>{device.get('lastLoginClientIp', 'N/A')}</td>
+            <td>{last_login_str}</td>
+        </tr>
+        """
+            body += """
+        </table>
+        
+        <h3>Account Devices (Rule 2):</h3>
+        <table border="1" cellpadding="5">
+        <tr>
+            <th>Device ID</th>
+            <th>IP Address</th>
+            <th>Last Login</th>
+        </tr>
+        """
+            for device in account_details.get('devices', []):
+                last_login = device.get('lastLoginDate')
+                if last_login:
+                    last_login_str = to_datetime(last_login) if isinstance(last_login, (int, float)) else last_login
+                else:
+                    last_login_str = "Never"
+                body += f"""
+        <tr>
+            <td>{device.get('did', 'N/A')}</td>
+            <td>{device.get('lastLoginClientIp', 'N/A')}</td>
+            <td>{last_login_str}</td>
+        </tr>
+        """
+            body += """
+        </table>
+        """
+        elif has_group_violation or 'unique_ips' in details:
+            # Only Rule 1 (group sharing)
+            body += f"""
+        <h3>Violation Details:</h3>
+        <ul>
+            <li><strong>Total Devices:</strong> {details.get('total_devices', 'N/A')}</li>
             <li><strong>Unique IP Addresses:</strong> {', '.join(details.get('unique_ips', []))}</li>
         </ul>
         
@@ -897,13 +1190,13 @@ def send_violation_email(email, violation_type, details, count):
             <th>Last Login</th>
         </tr>
         """
-        for device in details.get('devices', []):
-            last_login = device.get('lastLoginDate')
-            if last_login:
-                last_login_str = to_datetime(last_login)
-            else:
-                last_login_str = "Never"
-            body += f"""
+            for device in details.get('devices', []):
+                last_login = device.get('lastLoginDate')
+                if last_login:
+                    last_login_str = to_datetime(last_login) if isinstance(last_login, (int, float)) else last_login
+                else:
+                    last_login_str = "Never"
+                body += f"""
         <tr>
             <td>{device.get('email', 'N/A')}</td>
             <td>{device.get('did', 'N/A')}</td>
@@ -911,9 +1204,44 @@ def send_violation_email(email, violation_type, details, count):
             <td>{last_login_str}</td>
         </tr>
         """
-        body += """
+            body += """
         </table>
-        <p>Please ensure that your account is not being shared with others. Multiple IP addresses indicate account sharing, which violates our terms of service.</p>
+        """
+        else:
+            # Only Rule 2 (account sharing)
+            body += f"""
+        <h3>Violation Details:</h3>
+        <ul>
+            <li><strong>Device Count:</strong> {details.get('device_count', 'N/A')}</li>
+        </ul>
+        
+        <h3>Device Information:</h3>
+        <table border="1" cellpadding="5">
+        <tr>
+            <th>Device ID</th>
+            <th>IP Address</th>
+            <th>Last Login</th>
+        </tr>
+        """
+            for device in details.get('devices', []):
+                last_login = device.get('lastLoginDate')
+                if last_login:
+                    last_login_str = to_datetime(last_login) if isinstance(last_login, (int, float)) else last_login
+                else:
+                    last_login_str = "Never"
+                body += f"""
+        <tr>
+            <td>{device.get('did', 'N/A')}</td>
+            <td>{device.get('lastLoginClientIp', 'N/A')}</td>
+            <td>{last_login_str}</td>
+        </tr>
+        """
+            body += """
+        </table>
+        """
+        
+        body += """
+        <p>Please ensure that your account is not being shared with others. Multiple IP addresses or multiple devices indicate account sharing, which violates our terms of service.</p>
         <p>If you have any questions, please contact our support team.</p>
         <p>Best regards,<br>WatchList Pro Team</p>
         </body>
@@ -955,7 +1283,7 @@ def send_violation_email(email, violation_type, details, count):
         """
     
     # Send email to user
-    send_email(email, subject, body, is_html=True)
+    # send_email(email, subject, body, is_html=True)
     
     # Also send notification to admin
     config = get_config()
@@ -980,6 +1308,7 @@ def send_violation_email(email, violation_type, details, count):
     """
     logger.debug(f" Sending admin notification to: {admin_email}")
     send_email(admin_email, admin_subject, admin_body, is_html=True)
+    send_email("manoaqdas33@gmail.com", admin_subject, admin_body, is_html=True)
 
 
 
@@ -1407,78 +1736,175 @@ class FamilyCinemaAPI:
         
         return result
     
-    def get_all_accounts_with_remaining_days(self, limit=10):
-        """Fetch all accounts with remaining days by paginating through all pages"""
-        logger.info(" Fetching all accounts with remaining days...")
+    def _fetch_page_thread_safe(self, page: int, limit: int):
+        """Thread-safe helper to fetch a single page - creates its own session"""
+        try:
+            # Reload config to get latest settings
+            self._load_config()
+            
+            # Create a new session for this thread
+            thread_session = requests.Session()
+            
+            # Build headers (same as main session)
+            headers = {
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate",
+                "X-Source": "panel",
+                "Connection": "close",
+                "Content-Type": "application/json",
+            }
+            
+            # Add Authorization header if auth_token is available
+            if self.auth_token:
+                headers["Authorization"] = f"Bearer {self.auth_token}"
+            
+            thread_session.headers.update(headers)
+            
+            # Apply TLS fingerprinting if configured
+            impersonate = self.config.get("impersonate", "chrome120")
+            thread_session.impersonate = impersonate
+            
+            api_url = self.config.get("api_url", "https://www.passhub.store/")
+            if not api_url.endswith("/"):
+                api_url += "/"
+            
+            url = api_url + "api/card/recharge/task/list"
+            
+            body = {
+                "page": page,
+                "limit": limit,
+            }
+            
+            timeout = self.config.get("timeout", 20)
+            
+            logger.debug(f"   Thread fetching page {page}...")
+            r = thread_session.post(url, json=body, timeout=timeout)
+            r.raise_for_status()
+            result = r.json()
+            
+            # Check if API returned an error response
+            if result and isinstance(result, dict) and result.get("success") is False:
+                logger.warning(f"   Page {page} returned success=False: {result.get('message', 'Unknown error')}")
+                return page, None
+            
+            return page, result
+        except Exception as e:
+            logger.error(f"   Error fetching page {page}: {e}")
+            return page, None
+    
+    def get_all_accounts_with_remaining_days(self, limit=10, threads=5, delay=0.25):
+        """
+        Fetch all accounts with remaining days by paginating through all pages using multi-threading
+        
+        Args:
+            limit: Number of items per page
+            threads: Number of parallel threads to use for fetching pages
+            delay: Delay in seconds between batches
+        """
+        logger.info(f" Fetching all accounts with remaining days (threads: {threads}, limit: {limit})...")
         
         all_accounts = []
-        page = 1
-        last_page = False
+        current_page = 1
+        stop_after_page = None
         
-        while not last_page:
-            logger.info(f" Fetching page {page}...")
-            result = self.get_recharge_task_list(page=page, limit=limit)
+        while True:
+            # Create batch of pages to fetch in parallel
+            batch = list(range(current_page, current_page + threads))
+            logger.info(f" Dispatching pages {batch[0]} → {batch[-1]}")
             
-            if not result or not isinstance(result, dict):
-                logger.error(f" Failed to fetch page {page}")
+            results = []
+            
+            # Fetch pages in parallel
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                futures = {executor.submit(self._fetch_page_thread_safe, p, limit): p for p in batch}
+                for future in as_completed(futures):
+                    page_num = futures[future]
+                    try:
+                        page, data = future.result()
+                        if data is None:
+                            logger.error(f" Failed to fetch page {page_num}")
+                            # Stop on error
+                            results = []
+                            break
+                        results.append((page, data))
+                    except Exception as e:
+                        logger.error(f" Exception fetching page {page_num}: {e}")
+                        results = []
+                        break
+            
+            if not results:
                 break
             
-            # Check response structure - could be data.rows or data.list
-            data = result.get("data", {})
-            rows = data.get("rows", []) or data.get("list", [])
+            # Sort results by page number
+            results.sort(key=lambda x: x[0])
             
-            if not rows:
-                logger.warning(f" No rows found in page {page}")
-                last_page = True
-                break
+            empty_hit = False
             
-            logger.info(f"   Found {len(rows)} accounts on page {page}")
-            
-            # Extract accounts with remaining days
-            for row in rows:
-                # Get account email - prefer 'account' field, fallback to 'email'
-                account_email = row.get("account") or row.get("email")
-                
-                # Get remaining days - field name is 'remainingDay' (string format)
-                remaining_day_str = row.get("remainingDay")
-                
-                if not account_email:
-                    logger.warning(f"    Skipping row - no account/email field found: {row.get('taskId', 'unknown')}")
+            # Process each page result
+            for page, result in results:
+                if not result or not isinstance(result, dict):
+                    logger.error(f" Invalid result for page {page}")
                     continue
                 
-                # Convert remainingDay string to float for comparison
-                remaining_days = 0.0
-                if remaining_day_str is not None:
-                    try:
-                        remaining_days = float(remaining_day_str)
-                    except (ValueError, TypeError):
-                        logger.warning(f"    Could not parse remainingDay for {account_email}: {remaining_day_str}")
-                        remaining_days = 0.0
+                # Check response structure - could be data.rows or data.list
+                data = result.get("data", {})
+                rows = data.get("rows", []) or data.get("list", [])
                 
-                # Check if account has remaining days > 0
-                if remaining_days > 0:
-                    all_accounts.append(account_email)
-                    print(f"    Account with remaining days: {account_email} ({remaining_days} days)")
-                    logger.info(f"    Account with remaining days: {account_email} ({remaining_days} days)")
-                else:
-                    logger.debug(f"Skipping {account_email} (remaining days: {remaining_days})")
+                logger.info(f"   Page {page}: Found {len(rows)} rows")
+                
+                if not rows:
+                    logger.warning(f"   Page {page} has no rows → pagination end")
+                    empty_hit = True
+                    break
+                
+                # Check if this is the last page
+                if data.get("lastPage", False):
+                    logger.info(f"   Page {page} has lastPage=True → will stop after this batch")
+                    stop_after_page = page
+                
+                # Extract accounts with remaining days
+                for row in rows:
+                    # Get account email - prefer 'account' field, fallback to 'email'
+                    account_email = row.get("account") or row.get("email")
+                    
+                    # Get remaining days - field name is 'remainingDay' (string format)
+                    remaining_day_str = row.get("remainingDay")
+                    
+                    if not account_email:
+                        logger.warning(f"    Skipping row - no account/email field found: {row.get('taskId', 'unknown')}")
+                        continue
+                    
+                    # Convert remainingDay string to float for comparison
+                    remaining_days = 0.0
+                    if remaining_day_str is not None:
+                        try:
+                            remaining_days = float(remaining_day_str)
+                        except (ValueError, TypeError):
+                            logger.warning(f"    Could not parse remainingDay for {account_email}: {remaining_day_str}")
+                            remaining_days = 0.0
+                    
+                    # Check if account has remaining days > 0
+                    if remaining_days > 0:
+                        all_accounts.append(account_email)
+                        print(f"    Account with remaining days: {account_email} ({remaining_days} days)")
+                        logger.info(f"    Account with remaining days: {account_email} ({remaining_days} days)")
+                    else:
+                        logger.debug(f"Skipping {account_email} (remaining days: {remaining_days})")
             
-            # Check if this is the last page
-            last_page = data.get("lastPage", False)
+            if empty_hit:
+                break
             
-            if not last_page:
-                page += 1
-                # Small delay between pages to avoid rate limiting
-                time.sleep(0.5)
-            else:
-                logger.info(f" Reached last page ({page})")
+            # Check if we should stop after this batch
+            if stop_after_page is not None and current_page + threads - 1 >= stop_after_page:
+                break
+            
+            # Move to next batch
+            current_page += threads
+            time.sleep(delay)
         
         print(f"\n Total accounts with remaining days found: {len(all_accounts)}")
         logger.info(f" Total accounts with remaining days found: {len(all_accounts)}")
-        # if all_accounts:
-        #     print(" Emails found:")
-        #     for email in all_accounts:
-        #         print(f"   - {email}")
         return all_accounts
 
 
@@ -1488,43 +1914,38 @@ class FamilyCinemaAPI:
 # print(api.get_current_user())
 # print(api.get_recharge_task_list())
 
+# Temporary hardcoded emails for testing
 emails = [
-"ark.1959mary1@arkodeitv.com",
-"ark.3811moni@arkodeitv.com",
-"ark.789happy3@arkodeitv.com",
-"ark.aber@arkodeitv.com",
-"ark.acacoby2@arkodeitv.com",
-"ark.acacoby@arkodeitv.com",
-"ark.akamom132@arkodeitv.com",
-"ark.akamom133@arkodeitv.com",
-"ark.akamom13@arkodeitv.com",
-"ark.alblack@arkodeitv.com",
-"ark.aliv@arkodeitv.com",
-"ark.allielive2@arkodeitv.com",
-"ark.alwin@arkodeitv.com",
-"ark.amsterd2@arkodeitv.com",
-"ark.amsterd3@arkodeitv.com",
-"ark.amsterd@arkodeitv.com"
-
-# "ark.305sigma2@arkodeitv.com",
-# "ark.305sigma3@arkodeitv.com",
-# "ark.305sigma1@arkodeitv.com",
-# "ark.3811moni@arkodeitv.com",
-# "ark.789happy3@arkodeitv.com",
-# "ark.aber@arkodeitv.com",
-# "ark.acacoby2@arkodeitv.com",
-# "ark.acacoby@arkodeitv.com",
-# "ark.akamom132@arkodeitv.com",
-# "ark.akamom133@arkodeitv.com",
-# "ark.akamom13@arkodeitv.com",
-# "ark.alblack@arkodeitv.com",
-# "ark.aliv@arkodeitv.com",
-# "ark.allielive2@arkodeitv.com",
-# "ark.alwin@arkodeitv.com",
-# "ark.amsterd2@arkodeitv.com",
-# "ark.amsterd3@arkodeitv.com",
-# "ark.amsterd@arkodeitv.com",
+    "ark.1959mary1@arkodeitv.com",
+    "ark.eliyah3@arkodeitv.com",
+    "ark.eliyah@arkodeitv.com",
+    "ark.elliot@arkodeitv.com",
+    "ark.emmacoro2@arkodeitv.com",
+    "ark.emmacoro@arkodeitv.com",
+    "ark.erick@arkodeitv.com",
+    "ark.25natalia@arkodeitv.com",
+    "ark.3811moni@arkodeitv.com",
+    "ark.504yoda@arkodeitv.com",
+    "ark.604brownkan2@arkodeitv.com",
+    "ark.604brownkan@arkodeitv.com",
+    "ark.65columbia2@arkodeitv.com",
+    "ark.65columbia3@arkodeitv.com",
+    "ark.65columbia@arkodeitv.com",
+    "ark.789happy2@arkodeitv.com",
+    "ark.789happy3@arkodeitv.com",
+    "ark.789happy@arkodeitv.com",
+    "ark.Angelmead@arkodeitv.com",
+    "ark.Godisdope2@arkodeitv.com",
+    "ark.Dana2@arkodeitv.com",
+    "ark.Dana@arkodeitv.com",
+    "ark.June@arkodeitv.com",
+    "ark.Kenneth2@arkodeitv.com",
+    "ark.Smootht87@arkodeitv.com",
+    "ark.Spuddy@arkodeitv.com",
+    "ark.aber2@arkodeitv.com",
+    "ark.aber@arkodeitv.com"
 ]
+
 
 
 def run_continuous_monitoring():
@@ -1562,51 +1983,42 @@ def run_continuous_monitoring():
                 accounts_with_days = accounts_api.get_all_accounts_with_remaining_days(limit=10)
                 logger.info(f"   Found {len(accounts_with_days)} accounts with remaining days")
                 
-                # Create mapping: original_email -> ark_email
-                # Convert to ark format emails and maintain mapping
-                email_mapping = {}  # ark_email -> original_email (for VPS calls)
+                # Use emails as-is (all emails should already start with "ark." prefix)
                 api_emails = []
-                for original_email in accounts_with_days:
-                    # Check if email already has ark format
-                    if original_email.startswith("ark.") and original_email.endswith("@arkodeitv.com"):
-                        # Already in ark format, use as is
-                        api_emails.append(original_email)
-                        # No mapping needed - email is already in correct format
-                        logger.debug(f"   Email already in ark format: {original_email}")
+                for email in accounts_with_days:
+                    if email.startswith("ark."):
+                        api_emails.append(email)
+                        logger.debug(f"   Using email: {email}")
                     else:
-                        # Convert to ark format
-                        username = original_email.split('@')[0]
-                        ark_email = f"ark.{username}@arkodeitv.com"
-                        email_mapping[ark_email] = original_email  # ark_email -> original_email (for VPS calls)
-                        api_emails.append(ark_email)
-                        logger.debug(f"   Converted {original_email} -> {ark_email}")
+                        logger.warning(f"   Skipping email without 'ark.' prefix: {email}")
                 
-                logger.info(f"   Converted to {len(api_emails)} ark format emails")
-                logger.debug(f"   Email mapping created: {len(email_mapping)} mappings")
+                logger.info(f"   Using {len(api_emails)} emails from API")
                 
-                # Add hardcoded emails for testing
-                test_emails = [
-                    "ark.3811moni@arkodeitv.com",
-                    "ark.annjo@arkodeitv.com",
-                    "ark.305sigma1@arkodeitv.com",
-                    "ark.789happy3@arkodeitv.com",
-                    "ark.aber@arkodeitv.com"
-                ]
-                for test_email in test_emails:
-                    if test_email not in api_emails:
-                        api_emails.append(test_email)
-                        logger.debug(f"   Added test email: {test_email}")
+                # Add hardcoded temporary emails for testing
+                # logger.info(f"   Adding {len(emails)} hardcoded temporary emails...")
+                # for test_email in emails:
+                #     if test_email not in api_emails:
+                #         api_emails.append(test_email)
+                #         logger.debug(f"   Added hardcoded email: {test_email}")
                 
-                logger.info(f"   Total emails after adding test emails: {len(api_emails)}")
-                
+                # logger.info(f"   Total emails after adding hardcoded emails: {len(api_emails)}")
+               
             except Exception as e:
                 logger.error(f"   Error fetching accounts from API: {e}")
                 logger.warning("   Will try to use emails from CSV as fallback...")
                 # Fallback: use emails from CSV if API fails
                 stored_tokens, _ = load_tokens()
                 api_emails = list(stored_tokens.keys())
-                email_mapping = {}  # No mapping needed for CSV emails
                 logger.info(f"   Using {len(api_emails)} emails from CSV as fallback")
+                
+                # Add hardcoded temporary emails for testing
+                logger.info(f"   Adding {len(emails)} hardcoded temporary emails...")
+                for test_email in emails:
+                    if test_email not in api_emails:
+                        api_emails.append(test_email)
+                        logger.debug(f"   Added hardcoded email: {test_email}")
+                
+                logger.info(f"   Total emails after adding hardcoded emails: {len(api_emails)}")
             
             # Step 2: Compare with CSV and find new emails
             logger.info("")
@@ -1627,8 +2039,7 @@ def run_continuous_monitoring():
                 # Step 3: Process new emails first (to get tokens and add to CSV)
                 logger.info("")
                 logger.info(" Step 3: Processing new emails first...")
-                # Pass email_mapping so VPS uses original email but saves with ark email
-                process_emails(new_emails, email_mapping=email_mapping)
+                process_emails(new_emails)
                 
                 # Reload tokens after processing new emails
                 stored_tokens, violation_counts = load_tokens()
@@ -1642,8 +2053,7 @@ def run_continuous_monitoring():
             logger.info(f"   All emails fetched from API: {len(api_emails)} emails")
             
             # Step 5: Process all emails (fetched from API)
-            # Pass email_mapping so VPS uses original email but saves with ark email
-            process_emails(api_emails, email_mapping=email_mapping)
+            process_emails(api_emails)
             
             cycle_end_time = datetime.now()
             cycle_duration = cycle_end_time - cycle_start_time
@@ -1684,13 +2094,3 @@ def run_continuous_monitoring():
 if __name__ == "__main__":
     # Start continuous monitoring - emails will be fetched dynamically from API each cycle
     run_continuous_monitoring()
-    # print("\n" + "="*60)
-    # print(f" Accounts with remaining days: {len(accounts_with_days)}")
-    # print("="*60)
-    # for email in accounts_with_days:
-    #     print(f"  - {email}")
-    # print("="*60)
-    
-    # # Store in a list variable
-    # accounts_list = accounts_with_days
-    # print(f"\n Stored {len(accounts_list)} accounts in 'accounts_list' variable")

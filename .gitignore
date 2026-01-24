@@ -2,6 +2,11 @@
 venv/
 .venv/
 
+
+proxy_manager/
+pics/
+
+
 # Logs
 logs/
 log/
@@ -11,13 +16,10 @@ log/
 *.png
 *.txt
 *.md
-pics/
-
 
 
 app.py
 main.py
-test.py
 passhub.py
 main_code/
 single_one.py
