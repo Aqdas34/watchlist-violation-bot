@@ -15,13 +15,14 @@ import pyautogui
 from playwright.sync_api import sync_playwright
 
 # === Logging Configuration ===
+from logging.handlers import RotatingFileHandler
 LOG_FILE = "server_proxy_rotator.log"
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        RotatingFileHandler(LOG_FILE, maxBytes=5*1024*1024, backupCount=3, encoding='utf-8'),
         logging.StreamHandler()  # Also log to console
     ]
 )
@@ -37,10 +38,11 @@ PROFILE_PATHS = [
     ]
 EDGE_PROFILE_PATH = None  # Base path to store Edge profiles
 # Path to your virtual environment
-VENV_PATH = r"C:\Users\Administrator\Desktop\new_code\venv\Scripts\activate.bat"
+VENV_PATH = r"C:\Users\Administrator\Desktop\violation_bot\venv\Scripts\activate.bat"
+# VENV_PATH = r"D:\WEBANDCODES\watchList\sharing_bot\venv\Scripts\activate.bat"
 ROTATE_PROXY_SIGNAL_FILE = "rotate_proxy.flag"  # Signal file to trigger proxy rotation
 REQUEST_COUNT_FILE = "request_count.txt"  # File to track request count per proxy
-MAX_REQUESTS_PER_PROXY = 8  # Rotate after this many requests
+MAX_REQUESTS_PER_PROXY = 1  # Rotate after this many requests
 REMOTE_DEBUGGING_PORT = 9223  # Port for remote debugging
 CURRENT_PROFILE_FILE = "current_profile.txt"  # File to track current profile path
 
@@ -91,44 +93,72 @@ def open_edge_profile(profile_number: int):
             "--start-maximized",
         ]
 
-    logger.info(f"🚀 Opening Edge profile {profile_number}...")
-    logger.info(f"🚀 Profile path: {profile_dir}")
+    logger.info(f"  Opening Edge profile {profile_number}...")
+    logger.info(f"  Profile path: {profile_dir}")
     subprocess.Popen(command)
-    logger.info(f"✅ Edge process started for profile {profile_number}")
+    logger.info(f"  Edge process started for profile {profile_number}")
     time.sleep(5)
 
-    location = pyautogui.locateCenterOnScreen("pics/sign_without_data.png", confidence=0.8)
-    if not location:
-        logger.warning("❌ Sign without data not found")
-        return
-    click_at(location.x, location.y)
-    time.sleep(1)
-    location = pyautogui.locateCenterOnScreen("pics/confirm_and_continue.png", confidence=0.8)
-    if not location:
-        logger.warning("❌ Confirm and continue not found")
-        return
-    click_at(location.x, location.y)
+    try:
+        location = pyautogui.locateCenterOnScreen("pics/sign_without_data.png", confidence=0.8)
+        if location:
+            logger.info("  Found 'Sign without data'")
+            click_at(location.x, location.y)
+        else:
+            logger.warning("  'Sign without data' not found")
+    except Exception as e:
+        logger.error(f"  Error locating 'pics/sign_without_data.png': {e}")
+    
+    time.sleep(2)
+
+    try:
+        location = pyautogui.locateCenterOnScreen("pics/confirm_and_continue.png", confidence=0.8)
+        if location:
+            logger.info("  Found 'Confirm and continue'")
+            click_at(location.x, location.y)
+        else:
+            logger.warning("  'Confirm and continue' not found")
+    except Exception as e:
+        logger.error(f"  Error locating 'pics/confirm_and_continue.png': {e}")
+
     time.sleep(1)
 
-    location = pyautogui.locateCenterOnScreen("pics/confirm_and_browse.png", confidence=0.8)
-    if not location:
-        logger.warning("❌ Confirm and browse not found")
-        return
-    click_at(location.x, location.y)
+    try:
+        location = pyautogui.locateCenterOnScreen("pics/continue_without_google.png", confidence=0.8)
+        if location:
+            logger.info("  Found 'Continue without Google'")
+            click_at(location.x, location.y)
+        else:
+             logger.warning("  'Continue without Google' not found")
+    except Exception as e:
+        logger.error(f"  Error locating 'pics/continue_without_google.png': {e}")
+    
+    time.sleep(1)
+
+    try:
+        location = pyautogui.locateCenterOnScreen("pics/confirm_and_browse.png", confidence=0.8)
+        if location:
+            logger.info("  Found 'Confirm and browse'")
+            click_at(location.x, location.y)
+        else:
+            logger.warning("  'Confirm and browse' not found")
+    except Exception as e:
+        logger.error(f"  Error locating 'pics/confirm_and_browse.png': {e}")
+    
     time.sleep(1)
 
 def delete_edge_profile(profile_number: int):
     profile_dir = os.path.join(PROFILE_BASE_PATH, f"automation_profile_{profile_number}")
 
     if not os.path.exists(profile_dir):
-        logger.warning(f"❌ Profile does not exist: {profile_dir}")
+        logger.warning(f"  Profile does not exist: {profile_dir}")
         return
 
     try:
         shutil.rmtree(profile_dir)
-        logger.info(f"🗑️ Deleted Edge profile {profile_number}")
+        logger.info(f"  Deleted Edge profile {profile_number}")
     except Exception as e:
-        logger.error(f"❌ Failed to delete profile {profile_number}: {e}")
+        logger.error(f"  Failed to delete profile {profile_number}: {e}")
 
 def extract_profile_number(profile_path: str) -> int:
     """Extract profile number from profile path like 'C:\\temp_profile\\automation_profile_1'"""
@@ -141,17 +171,17 @@ def extract_profile_number(profile_path: str) -> int:
             return int(number_str)
         return None
     except Exception as e:
-        logger.error(f"❌ Failed to extract profile number from {profile_path}: {e}")
+        logger.error(f"  Failed to extract profile number from {profile_path}: {e}")
         return None
 
 def recreate_edge_profile(profile_number: int):
     """Delete and recreate an Edge profile"""
-    logger.info(f"🔄 Recreating Edge profile {profile_number}...")
+    logger.info(f"  Recreating Edge profile {profile_number}...")
     delete_edge_profile(profile_number)
-    time.sleep(2)  # Wait a bit before recreating
+    time.sleep(3)  # wait before recreating
     open_edge_profile(profile_number)
     visit_and_press_ctrl_2()
-    logger.info(f"✅ Successfully recreated Edge profile {profile_number}")
+    logger.info(f"  Successfully recreated Edge profile {profile_number}")
 
 # =====================================================
 #  EDGE PATH DETECTION
@@ -191,12 +221,12 @@ def visit_and_press_ctrl_2():
         browser = pw.chromium.connect_over_cdp("http://127.0.0.1:9223")
         context = browser.contexts[0]
 
-        # 🔴 Close ONLY the first tab (if it exists)
+        #   Close ONLY the first tab (if it exists)
         if context.pages:
             context.pages[0].close()
 
         page = context.pages[0]
-        # 🟢 Open a new tab
+        #   Open a new tab
         # page = context.new_page()
         # page.set_default_timeout(60000)
 
@@ -208,11 +238,11 @@ def visit_and_press_ctrl_2():
 )
 
 
-        # 🔥 Bring Edge to front so PyAutoGUI works
+        #   Bring Edge to front so PyAutoGUI works
         page.bring_to_front()
         time.sleep(2)
 
-        # 🔽 Zoom out using OS-level keys
+        #   Zoom out using OS-level keys
         for _ in range(2):
             pyautogui.hotkey('ctrl', '-')
             time.sleep(0.5)
@@ -363,17 +393,47 @@ def load_proxies():
         else:
             # Create default proxies file if it doesn't exist
             default_proxies = [
-                {"proxy": "203.160.121.123:5323", "failed_count": 0},
-                {"proxy": "208.72.210.94:7379", "failed_count": 0},
-                {"proxy": "45.56.148.132:5786", "failed_count": 0},
-                {"proxy": "9.142.206.120:6786", "failed_count": 0},
-                {"proxy": "208.72.211.145:6930", "failed_count": 0},
-                {"proxy": "66.43.6.113:7984", "failed_count": 0},
-                {"proxy": "9.142.213.136:7301", "failed_count": 0},
-                {"proxy": "9.142.202.35:6702", "failed_count": 0},
-                {"proxy": "138.226.75.192:5382", "failed_count": 0},
-                {"proxy": "199.115.178.20:6804", "failed_count": 0}
-            ]
+    {
+        "proxy": "158.140.195.125:6823",
+        "failed_count": 0
+    },
+    {
+        "proxy": "207.228.38.179:5842",
+        "failed_count": 0
+    },
+    {
+        "proxy": "45.91.6.99:7890",
+        "failed_count": 0
+    },
+    {
+        "proxy": "82.21.23.14:5778",
+        "failed_count": 0
+    },
+    {
+        "proxy": "31.98.19.213:6389",
+        "failed_count": 0
+    },
+    {
+        "proxy": "45.133.152.212:7503",
+        "failed_count": 0
+    },
+    {
+        "proxy": "82.29.141.134:7349",
+        "failed_count": 0
+    },
+    {
+        "proxy": "9.142.216.103:7767",
+        "failed_count": 0
+    },
+    {
+        "proxy": "207.228.18.183:5233",
+        "failed_count": 0
+    },
+    {
+        "proxy": "69.30.79.240:5293",
+        "failed_count": 0
+    }
+]
             save_proxies(default_proxies)
             return default_proxies
     except Exception as e:
@@ -506,8 +566,9 @@ def rotate_proxies():
     set_proxy(proxy)
     open_edge()  # Open Edge with the profile and proxy
     reset_request_count()  # Reset request count for new proxy
-    time.sleep(3)
+    time.sleep(8)   # let Edge come up before restarting app
     check_and_restart_server()
+    time.sleep(5)   # let app reconnect to CDP after restart
     signal_check_interval = 1  # seconds - check every 1 seconds for rotation signal
     recreated_after_robot_error = False  # True after 1st robot error + recreate; 2nd error -> increment proxy failed_count
     
@@ -549,7 +610,7 @@ def rotate_proxies():
                 logger.info(f"[PROFILE] Profile Name = {EDGE_PROFILE_PATH}")
                 time.sleep(3)
                 open_edge()
-                time.sleep(3)
+                time.sleep(5)  # let Edge stabilize after rotate
             else:
                 # First robot error -> close, delete, recreate, close, open via open_edge, same proxy. Do NOT increment.
                 if not current_profile_number:
@@ -572,32 +633,32 @@ def rotate_proxies():
                     proxy = proxy_info["proxy"]
                     set_proxy(proxy)
                     reset_request_count()
-                    time.sleep(3)
+                    time.sleep(5)
                     open_edge()
-                    time.sleep(3)
+                    time.sleep(5)
                 else:
                     logger.info(f"[ROBOT ERROR] First error -> recreating profile {current_profile_number}, keeping proxy {current_proxy_address}")
                     close_edge()
-                    time.sleep(2)
+                    time.sleep(3)
                     
                     try:
                         delete_edge_profile(current_profile_number)
-                        time.sleep(2)
+                        time.sleep(3)
                         profile_dir = os.path.join(r"C:\temp_profile", f"automation_profile_{current_profile_number}")
                         EDGE_PROFILE_PATH = profile_dir
                         logger.info(f"[PROFILE RECREATION] Opening new Edge profile {current_profile_number}...")
                         open_edge_profile(current_profile_number)
                         logger.info(f"[PROFILE RECREATION] Configuring profile {current_profile_number}...")
                         visit_and_press_ctrl_2()
-                        time.sleep(5)
+                        time.sleep(10)  # allow page load + zoom; recreation is slow
                         set_current_profile_path(EDGE_PROFILE_PATH)
                         logger.info(f"[PROFILE RECREATION] Closing and reopening via open_edge (same proxy)...")
                         close_edge()
-                        time.sleep(2)
-                        set_proxy(current_proxy_address)
-                        time.sleep(1)
-                        open_edge()
                         time.sleep(3)
+                        set_proxy(current_proxy_address)
+                        time.sleep(2)
+                        open_edge()
+                        time.sleep(15)  # let Edge + login page stabilize before next request
                         recreated_after_robot_error = True
                         logger.info(f"[PROFILE RECREATION] Done. Same proxy {current_proxy_address}. If error recurs -> failed_count incremented.")
                     except Exception as e:
@@ -620,11 +681,12 @@ def rotate_proxies():
                         proxy = proxy_info["proxy"]
                         set_proxy(proxy)
                         reset_request_count()
-                        time.sleep(3)
+                        time.sleep(5)
                         open_edge()
-                        time.sleep(3)
+                        time.sleep(15)
             
             check_and_restart_server()
+            time.sleep(10)   # let restarted app reconnect to Edge before next request
         
         request_count = get_request_count()
 
@@ -659,10 +721,11 @@ def rotate_proxies():
             proxy = proxy_info["proxy"]
             logger.info(f"[ROTATE] Switched to proxy: {proxy} (index: {current_proxy_index}, failed_count: {proxy_info.get('failed_count', 0)})")
             set_proxy(proxy)
-            time.sleep(3)
+            time.sleep(5)
             open_edge()
-            time.sleep(3)
+            time.sleep(15)  # let Edge stabilize after max-requests rotate
             check_and_restart_server()
+            time.sleep(10)   # let restarted app reconnect to Edge
 
         time.sleep(signal_check_interval)  # Check for signal every 1 seconds
 

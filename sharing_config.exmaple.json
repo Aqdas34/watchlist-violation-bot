@@ -1,0 +1,54 @@
+{
+  "files": {
+    "csv_file": "",
+    "violations_file": "",
+    "log_file": ""
+  },
+  "api": {
+    "api_url": "",
+    "vps_url": "",
+    "callback_url": "",
+    "capsolver_api_key": "",
+    "timeout": 60,
+    "vps_timeout": 930,
+    "token_retries": 3,
+    "token_retry_delay_seconds": 60,
+    "vps_retries": 3,
+    "vps_retry_delay_seconds": 120,
+    "queryinfo_retries": 3,
+    "queryinfo_retry_delay_seconds": 60
+  },
+  "email": {
+    "smtp_host": "",
+    "smtp_port": "",
+    "smtp_email": "",
+    "smtp_password": "",
+    "admin_email": "",
+    "smtp_timeout": 30
+  },
+  "violations": {
+    "sharing_threshold": 3,
+    "inactivity_threshold": 1,
+    "inactivity_days": 60,
+    "sharing_days": 30,
+    "cycle_interval_minutes": 10080
+  },
+  "processing": {
+    "sleep_between_accounts_seconds": 180
+  },
+  "exclusions": {
+    "accounts": [
+      ""
+    ],
+    "ips": [
+      ""
+    ],
+    "dids": [
+      "",
+      ""
+    ]
+  },
+  "headers": {
+    "Content-Type": "application/json"
+  }
+}

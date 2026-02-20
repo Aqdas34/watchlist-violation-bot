@@ -1,0 +1,200 @@
+{
+  "ark.65columbia3@arkodeitv.com": {
+    "sharing": {
+      "count": 1,
+      "last_violation_time": "2026-02-16T16:19:20.039778",
+      "details": {
+        "total_devices": 2,
+        "unique_dids": [
+          "e2d4c402eb02291d",
+          "8b31edcadf116d78"
+        ],
+        "devices": [
+          {
+            "email": "ark.65columbia@arkodeitv.com",
+            "did": "8b31edcadf116d78",
+            "lastLoginClientIp": "67.243.16.19",
+            "lastLoginDate": 1771240050925
+          },
+          {
+            "email": "ark.65columbia@arkodeitv.com",
+            "did": "e2d4c402eb02291d",
+            "lastLoginClientIp": "67.243.16.19",
+            "lastLoginDate": 1771183211273
+          }
+        ],
+        "rule": "Sharing Violation: Rule 2 (Devices)"
+      }
+    },
+    "inactivity": {
+      "count": 0,
+      "last_violation_time": null,
+      "details": null
+    }
+  },
+  "ark.65columbia@arkodeitv.com": {
+    "sharing": {
+      "count": 1,
+      "last_violation_time": "2026-02-16T16:19:20.060769",
+      "details": {
+        "total_devices": 2,
+        "unique_dids": [
+          "e2d4c402eb02291d",
+          "8b31edcadf116d78"
+        ],
+        "devices": [
+          {
+            "email": "ark.65columbia@arkodeitv.com",
+            "did": "8b31edcadf116d78",
+            "lastLoginClientIp": "67.243.16.19",
+            "lastLoginDate": 1771240050925
+          },
+          {
+            "email": "ark.65columbia@arkodeitv.com",
+            "did": "e2d4c402eb02291d",
+            "lastLoginClientIp": "67.243.16.19",
+            "lastLoginDate": 1771183211273
+          }
+        ],
+        "rule": "Sharing Violation: Rule 2 (Devices)"
+      }
+    },
+    "inactivity": {
+      "count": 0,
+      "last_violation_time": null,
+      "details": null
+    }
+  },
+  "ark.789happy2@arkodeitv.com": {
+    "sharing": {
+      "count": 1,
+      "last_violation_time": "2026-02-16T16:22:19.994779",
+      "details": {
+        "total_devices": 2,
+        "unique_dids": [
+          "800cf97294f9",
+          "087c39adf215"
+        ],
+        "devices": [
+          {
+            "email": "ark.789happy2@arkodeitv.com",
+            "did": "087c39adf215",
+            "lastLoginClientIp": "24.125.36.155",
+            "lastLoginDate": 1770253229133
+          },
+          {
+            "email": "ark.789happy@arkodeitv.com",
+            "did": "800cf97294f9",
+            "lastLoginClientIp": "24.125.36.155",
+            "lastLoginDate": 1769576484158
+          }
+        ],
+        "rule": "Sharing Violation: Rule 2 (Devices)"
+      }
+    },
+    "inactivity": {
+      "count": 0,
+      "last_violation_time": null,
+      "details": null
+    }
+  },
+  "ark.789happy3@arkodeitv.com": {
+    "sharing": {
+      "count": 1,
+      "last_violation_time": "2026-02-16T16:22:20.017768",
+      "details": {
+        "total_devices": 2,
+        "unique_dids": [
+          "800cf97294f9",
+          "087c39adf215"
+        ],
+        "devices": [
+          {
+            "email": "ark.789happy2@arkodeitv.com",
+            "did": "087c39adf215",
+            "lastLoginClientIp": "24.125.36.155",
+            "lastLoginDate": 1770253229133
+          },
+          {
+            "email": "ark.789happy@arkodeitv.com",
+            "did": "800cf97294f9",
+            "lastLoginClientIp": "24.125.36.155",
+            "lastLoginDate": 1769576484158
+          }
+        ],
+        "rule": "Sharing Violation: Rule 2 (Devices)"
+      }
+    },
+    "inactivity": {
+      "count": 0,
+      "last_violation_time": null,
+      "details": null
+    }
+  },
+  "ark.789happy@arkodeitv.com": {
+    "sharing": {
+      "count": 1,
+      "last_violation_time": "2026-02-16T16:22:20.033771",
+      "details": {
+        "total_devices": 2,
+        "unique_dids": [
+          "800cf97294f9",
+          "087c39adf215"
+        ],
+        "devices": [
+          {
+            "email": "ark.789happy2@arkodeitv.com",
+            "did": "087c39adf215",
+            "lastLoginClientIp": "24.125.36.155",
+            "lastLoginDate": 1770253229133
+          },
+          {
+            "email": "ark.789happy@arkodeitv.com",
+            "did": "800cf97294f9",
+            "lastLoginClientIp": "24.125.36.155",
+            "lastLoginDate": 1769576484158
+          }
+        ],
+        "rule": "Sharing Violation: Rule 2 (Devices)"
+      }
+    },
+    "inactivity": {
+      "count": 0,
+      "last_violation_time": null,
+      "details": null
+    }
+  },
+  "ark.Addj65@arkodeitv.com": {
+    "sharing": {
+      "count": 1,
+      "last_violation_time": "2026-02-16T16:22:38.912373",
+      "details": {
+        "total_devices": 2,
+        "unique_dids": [
+          "b4b742cd4c5a",
+          "b4b7426a0f4d"
+        ],
+        "devices": [
+          {
+            "email": "ark.Addj65@arkodeitv.com",
+            "did": "b4b742cd4c5a",
+            "lastLoginClientIp": "99.67.240.100",
+            "lastLoginDate": 1771229076744
+          },
+          {
+            "email": "ark.Addj65@arkodeitv.com",
+            "did": "b4b7426a0f4d",
+            "lastLoginClientIp": "99.67.240.100",
+            "lastLoginDate": 1770401662928
+          }
+        ],
+        "rule": "Sharing Violation: Rule 2 (Devices)"
+      }
+    },
+    "inactivity": {
+      "count": 0,
+      "last_violation_time": null,
+      "details": null
+    }
+  }
+}
