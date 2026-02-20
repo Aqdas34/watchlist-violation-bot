@@ -5,13 +5,13 @@ venv/
 
 proxy_manager/
 pics/
-componenets/
+components/
 files/
 logs/
 GUI/
 pics/
 proxy_manager/
-violation_bot_old/
+violationd_bot_old/
 
 # Logs
 logs/
